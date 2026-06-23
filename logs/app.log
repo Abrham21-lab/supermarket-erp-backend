@@ -1,0 +1,17 @@
+{"level":"error","message":"column p.branch_id does not exist"}
+{"level":"info","message":"Products retrieved"}
+{"level":"error","message":"(0 , _lib_auth__WEBPACK_IMPORTED_MODULE_2__.verifyToken) is not a function"}
+{"level":"error","message":"jwt malformed"}
+{"level":"error","message":"invalid token"}
+{"level":"info","message":"Products retrieved"}
+{"level":"error","message":"Forbidden"}
+{"level":"info","message":"Products retrieved"}
+{"level":"error","message":"Cannot read properties of undefined (reading 'toLowerCase')"}
+{"level":"error","message":"User role not found in token"}
+{"level":"error","message":"User role not found in token"}
+{"level":"error","message":"User role not found in token"}
+{"level":"info","message":"Products retrieved"}
+{"level":"info","message":"Products retrieved"}
+{"level":"info","message":"Products retrieved"}
+{"level":"info","message":"Products retrieved"}
+{"level":"info","message":"Products retrieved"}
