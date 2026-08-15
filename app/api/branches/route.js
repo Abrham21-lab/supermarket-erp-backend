@@ -1,74 +1,148 @@
 import { NextResponse } from "next/server";
 import pool from "../../../lib/db";
-import { branchSchema } from "../../../lib/validations/BranchValidation";
-import { validate } from "../../../lib/validations/validate";
-import { verifyRequestToken, requireRole } from "@/lib/auth";
+
+import {
+  verifyRequestToken,
+  requireRole,
+} from "@/lib/auth";
+
+import {
+  branchSchema,
+} from "../../../lib/validations/BranchValidation";
+
+import {
+  validate,
+} from "../../../lib/validations/validate";
 
 
 
+// ===============================
 // GET ALL BRANCHES
-// authenticated users
+// ===============================
+
+// ===============================
+// GET ALL BRANCHES
+// ===============================
 
 export async function GET(req) {
+  try {
+    const currentUser = verifyRequestToken(req);
 
-    try {
+    const { searchParams } = new URL(req.url);
 
+    const selectedTenant = searchParams.get("tenant_id");
 
-        verifyRequestToken(req);
+    let result;
 
+    // ===============================
+    // SYSTEM ADMIN
+    // ===============================
+    if (currentUser.isSystemAdmin === true) {
 
-        const result = await pool.query(
+      if (selectedTenant) {
 
-`
-SELECT
-
-b.id,
-
-b.name,
-
-b.address,
-
-b.phone,
-
-b.status,
-
-t.name AS tenant
-
-FROM branches b
-
-LEFT JOIN tenants t
-
-ON b.tenant_id = t.id
-
-ORDER BY b.id ASC
-
-`
-
+        result = await pool.query(
+          `
+          SELECT
+            b.id,
+            b.name,
+            b.address,
+            b.phone,
+            b.status,
+            b.tenant_id,
+            t.name AS tenant_name,
+            b.created_at
+          FROM branches b
+          LEFT JOIN tenants t
+          ON b.tenant_id=t.id
+          WHERE b.tenant_id=$1
+          ORDER BY b.id DESC
+          `,
+          [selectedTenant]
         );
 
+      } else {
 
-        return NextResponse.json(
-            result.rows
+        result = await pool.query(
+          `
+          SELECT
+            b.id,
+            b.name,
+            b.address,
+            b.phone,
+            b.status,
+            b.tenant_id,
+            t.name AS tenant_name,
+            b.created_at
+          FROM branches b
+          LEFT JOIN tenants t
+          ON b.tenant_id=t.id
+          ORDER BY b.id DESC
+          `
         );
 
-
-    } catch(error){
-
-
-        return NextResponse.json(
-
-            {
-                message:error.message
-            },
-
-            {
-                status:500
-            }
-
-        );
+      }
 
     }
 
+    // ===============================
+    // TENANT USER
+    // ===============================
+    else {
+
+      const tenantId =
+        currentUser.tenantId ||
+        currentUser.tenant_id;
+
+      if (!tenantId) {
+        return NextResponse.json(
+          {
+            message: "Tenant information missing from token",
+          },
+          {
+            status: 403,
+          }
+        );
+      }
+
+      result = await pool.query(
+        `
+        SELECT
+          b.id,
+          b.name,
+          b.address,
+          b.phone,
+          b.status,
+          b.tenant_id,
+          t.name AS tenant_name,
+          b.created_at
+        FROM branches b
+        LEFT JOIN tenants t
+        ON b.tenant_id=t.id
+        WHERE b.tenant_id=$1
+        ORDER BY b.id DESC
+        `,
+        [tenantId]
+      );
+
+    }
+
+    return NextResponse.json(result.rows);
+
+  } catch (error) {
+
+    console.error("GET BRANCHES ERROR:", error);
+
+    return NextResponse.json(
+      {
+        message: error.message,
+      },
+      {
+        status: 500,
+      }
+    );
+
+  }
 }
 
 
@@ -76,143 +150,157 @@ ORDER BY b.id ASC
 
 
 
+// ===============================
 // CREATE BRANCH
-// only admin + superAdmin
+// ===============================
 
 export async function POST(req){
 
 
-    try{
+  try {
 
 
-        const user = verifyRequestToken(req);
+    const currentUser =
+      verifyRequestToken(req);
 
 
-        requireRole(
-            user,
-            [
-                "admin",
-                "superAdmin"
-            ]
-        );
 
+    requireRole(
+      currentUser,
+      [
+        "admin",
+        "superAdmin"
+      ]
+    );
 
 
-        const body = await req.json();
 
+    const body =
+      await req.json();
 
 
-        const data = validate(
-            branchSchema,
-            body
-        );
 
+    const data =
+      validate(
+        branchSchema,
+        body
+      );
 
 
-        if(data instanceof Response){
 
-            return data;
+    if(data instanceof Response){
 
-        }
+      return data;
 
+    }
 
 
 
-        const {
+    const {
+      tenant_id,
+      name,
+      address,
+      phone,
+      status
+    } = data;
 
-            tenant_id,
 
-            name,
 
-            address,
+    let assignedTenant;
 
-            phone,
+    if (currentUser.isSystemAdmin) {
 
-            status
+  assignedTenant = Number(tenant_id);
 
-        } = data;
+}
 
 
+    else {
 
 
-        const result = await pool.query(
-
-`
-INSERT INTO branches
-
-(
-
-tenant_id,
-
-name,
-
-address,
-
-phone,
-
-status
-
-)
-
-VALUES
-
-($1,$2,$3,$4,$5)
-
-RETURNING *
-
-`
-
-,
-
-[
-
-tenant_id,
-
-name,
-
-address,
-
-phone,
-
-status ?? true
-
-]
-
-);
-
-
-
-
-        return NextResponse.json(
-
-            result.rows[0],
-
-            {
-                status:201
-            }
-
-        );
-
-
-
-    }catch(error){
-
-
-
-        return NextResponse.json(
-
-            {
-                message:error.message
-            },
-
-            {
-                status:500
-            }
-
-        );
+      assignedTenant =
+        currentUser.tenantId ||
+        currentUser.tenant_id;
 
 
     }
 
+
+
+    if(!assignedTenant){
+
+
+      return NextResponse.json(
+        {
+          message:
+          "Tenant information missing"
+        },
+        {
+          status:403
+        }
+      );
+
+
+    }
+
+
+
+    const result =
+      await pool.query(
+        `
+        INSERT INTO branches
+        (
+          tenant_id,
+          name,
+          address,
+          phone,
+          status
+        )
+
+        VALUES
+        ($1,$2,$3,$4,$5)
+
+        RETURNING *
+        `,
+        [
+          assignedTenant,
+          name,
+          address,
+          phone,
+          status ?? true
+        ]
+      );
+
+
+
+    return NextResponse.json(
+      result.rows[0],
+      {
+        status:201
+      }
+    );
+
+
+
+  }catch(error){
+
+
+    console.error(
+      "CREATE BRANCH ERROR:",
+      error
+    );
+
+
+    return NextResponse.json(
+      {
+        message:error.message
+      },
+      {
+        status:500
+      }
+    );
+
+
+  }
 
 }

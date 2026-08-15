@@ -1,342 +1,442 @@
 import { NextResponse } from "next/server";
 import pool from "../../../../lib/db";
-import { verifyRequestToken, requireRole } from "@/lib/auth";
-import { supplierSchema } from "../../../../lib/validations/supplierValidation";
-import { validate } from "../../../../lib/validations/validate";
+
+import {
+  verifyRequestToken,
+  requireRole,
+} from "@/lib/auth";
+
+import {
+  supplierSchema,
+} from "../../../../lib/validations/supplierValidation";
+
+import {
+  validate,
+} from "../../../../lib/validations/validate";
 
 
 
-
-
+// ======================================
 // GET SINGLE SUPPLIER
-// authenticated users
+// ======================================
 
 export async function GET(
-req,
-{params}
-){
+  req,
+  { params }
+) {
 
+  try {
 
-try{
+    const currentUser =
+      verifyRequestToken(req);
 
+    const { id } =
+      await params;
 
-verifyRequestToken(req);
+    let result;
 
+    // ----------------------------------
+    // System Admin
+    // ----------------------------------
 
+    if (currentUser.isSystemAdmin) {
 
-const { id } = await params;
+      result = await pool.query(
+        `
+        SELECT
 
+          s.*,
 
+          t.name AS tenant_name
 
-const result = await pool.query(
+        FROM suppliers s
 
-`
-SELECT *
+        LEFT JOIN tenants t
+        ON s.tenant_id=t.id
 
-FROM suppliers
+        WHERE s.id=$1
+        `,
+        [id]
+      );
 
-WHERE id=$1
+    }
 
-`,
+    // ----------------------------------
+    // Tenant Users
+    // ----------------------------------
 
-[id]
+    else {
 
-);
+      if (!currentUser.tenantId) {
 
+        throw new Error(
+          "Tenant not found in token"
+        );
 
+      }
 
-if(result.rows.length === 0){
+      result = await pool.query(
+        `
+        SELECT
 
-return NextResponse.json(
+          s.*,
 
-{
-message:"Supplier not found"
-},
+          t.name AS tenant_name
 
-{
-status:404
+        FROM suppliers s
+
+        LEFT JOIN tenants t
+        ON s.tenant_id=t.id
+
+        WHERE
+          s.id=$1
+        AND
+          s.tenant_id=$2
+        `,
+        [
+          id,
+          currentUser.tenantId,
+        ]
+      );
+
+    }
+
+    if (result.rows.length === 0) {
+
+      return NextResponse.json(
+        {
+          message: "Supplier not found"
+        },
+        {
+          status: 404
+        }
+      );
+
+    }
+
+    return NextResponse.json(
+      result.rows[0]
+    );
+
+  } catch (error) {
+
+    console.error(
+      "GET SUPPLIER ERROR:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        message: error.message
+      },
+      {
+        status: 500
+      }
+    );
+
+  }
+
 }
 
-);
-
-}
 
 
-
-return NextResponse.json(
-
-result.rows[0]
-
-);
-
-
-
-}catch(error){
-
-
-return NextResponse.json(
-
-{
-message:error.message
-},
-
-{
-status:500
-}
-
-);
-
-
-}
-
-
-}
-
-
-
-
-
-
-
-
+// ======================================
 // UPDATE SUPPLIER
-// admin + superAdmin + manager
+// ======================================
 
 export async function PUT(
-req,
-{params}
-){
+  req,
+  { params }
+) {
 
+  try {
 
-try{
+    const currentUser =
+      verifyRequestToken(req);
 
+    if (!currentUser.isSystemAdmin) {
 
-const user = verifyRequestToken(req);
+      requireRole(
+        currentUser,
+        [
+          "admin",
+          "manager",
+        ]
+      );
 
+    }
 
+    const { id } =
+      await params;
 
-requireRole(
+    const body =
+      await req.json();
 
-user,
+    const data =
+      validate(
+        supplierSchema,
+        body
+      );
 
-[
-"admin",
-"superAdmin",
-"manager"
-]
+    if (data instanceof Response) {
 
-);
+      return data;
 
+    }
 
+    const {
 
-const { id } = await params;
+      tenant_id,
+      name,
+      contact_person,
+      phone,
+      email,
+      address,
+      status,
 
+    } = data;
 
+    let assignedTenant;
+        // ----------------------------------
+    // Determine Tenant
+    // ----------------------------------
 
-const body = await req.json();
+    if (currentUser.isSystemAdmin) {
 
+      if (!tenant_id) {
 
+        return NextResponse.json(
+          {
+            message: "Tenant is required"
+          },
+          {
+            status: 400
+          }
+        );
 
+      }
 
-// validation
+      assignedTenant = tenant_id;
 
-const data = validate(
+    }
 
-supplierSchema,
+    else {
 
-body
+      assignedTenant = currentUser.tenantId;
 
-);
+      if (!assignedTenant) {
 
+        throw new Error(
+          "Tenant not found"
+        );
 
+      }
 
-if(data instanceof Response){
+    }
 
-return data;
+    // ----------------------------------
+    // Update Supplier
+    // ----------------------------------
+
+    let result;
+
+    if (currentUser.isSystemAdmin) {
+
+      result = await pool.query(
+        `
+        UPDATE suppliers
+
+        SET
+
+          tenant_id=$1,
+          name=$2,
+          contact_person=$3,
+          phone=$4,
+          email=$5,
+          address=$6,
+          status=$7
+
+        WHERE id=$8
+
+        RETURNING *
+        `,
+        [
+          assignedTenant,
+          name,
+          contact_person,
+          phone,
+          email,
+          address,
+          status,
+          id,
+        ]
+      );
+
+    }
+
+    else {
+
+      result = await pool.query(
+        `
+        UPDATE suppliers
+
+        SET
+
+          name=$1,
+          contact_person=$2,
+          phone=$3,
+          email=$4,
+          address=$5,
+          status=$6
+
+        WHERE
+
+          id=$7
+
+        AND
+
+          tenant_id=$8
+
+        RETURNING *
+        `,
+        [
+          name,
+          contact_person,
+          phone,
+          email,
+          address,
+          status,
+          id,
+          assignedTenant,
+        ]
+      );
+
+    }
+
+    if (result.rows.length === 0) {
+
+      return NextResponse.json(
+        {
+          message: "Supplier not found"
+        },
+        {
+          status: 404
+        }
+      );
+
+    }
+
+    return NextResponse.json({
+      success: true,
+      supplier: result.rows[0],
+    });
+
+  } catch (error) {
+
+    console.error(
+      "UPDATE SUPPLIER ERROR:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        message: error.message
+      },
+      {
+        status: 500
+      }
+    );
+
+  }
 
 }
 
 
 
-
-const {
-
-name,
-
-contact_person,
-
-phone,
-
-email,
-
-address,
-
-status
-
-
-}=data;
-
-
-
-
-
-const result = await pool.query(
-
-`
-UPDATE suppliers
-
-SET
-
-name=$1,
-
-contact_person=$2,
-
-phone=$3,
-
-email=$4,
-
-address=$5,
-
-status=$6
-
-WHERE id=$7
-
-RETURNING *
-
-`,
-
-[
-
-name,
-
-contact_person,
-
-phone,
-
-email,
-
-address,
-
-status,
-
-id
-
-]
-
-);
-
-
-
-
-return NextResponse.json(
-
-result.rows[0]
-
-);
-
-
-
-}catch(error){
-
-
-return NextResponse.json(
-
-{
-message:error.message
-},
-
-{
-status:500
-}
-
-);
-
-
-}
-
-}
-
-
-
-
-
-
-
-
-
+// ======================================
 // DELETE SUPPLIER
-// admin + superAdmin + manager
+// ======================================
 
 export async function DELETE(
-req,
-{params}
-){
+  req,
+  { params }
+) {
 
+  try {
 
-try{
+    const currentUser =
+      verifyRequestToken(req);
 
+    if (!currentUser.isSystemAdmin) {
 
-const user = verifyRequestToken(req);
+      requireRole(
+        currentUser,
+        [
+          "admin",
+          "manager",
+        ]
+      );
 
+    }
 
+    const { id } =
+      await params;
 
-requireRole(
+    if (currentUser.isSystemAdmin) {
 
-user,
+      await pool.query(
+        `
+        DELETE FROM suppliers
+        WHERE id=$1
+        `,
+        [id]
+      );
 
-[
-"admin",
-"superAdmin",
-"manager"
-]
+    }
 
-);
+    else {
 
+      await pool.query(
+        `
+        DELETE FROM suppliers
 
+        WHERE
 
-const { id } = await params;
+          id=$1
 
+        AND
 
+          tenant_id=$2
+        `,
+        [
+          id,
+          currentUser.tenantId,
+        ]
+      );
 
+    }
 
-await pool.query(
+    return NextResponse.json({
+      success: true,
+      message: "Supplier deleted successfully",
+    });
 
-"DELETE FROM suppliers WHERE id=$1",
+  } catch (error) {
 
-[id]
+    console.error(
+      "DELETE SUPPLIER ERROR:",
+      error
+    );
 
-);
+    return NextResponse.json(
+      {
+        message: error.message
+      },
+      {
+        status: 500
+      }
+    );
 
-
-
-
-return NextResponse.json(
-
-{
-message:"Supplier deleted successfully"
-}
-
-);
-
-
-
-}catch(error){
-
-
-return NextResponse.json(
-
-{
-message:error.message
-},
-
-{
-status:500
-}
-
-);
-
-
-}
-
+  }
 
 }

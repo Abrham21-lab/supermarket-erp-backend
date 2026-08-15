@@ -2,91 +2,89 @@ import { NextResponse } from "next/server";
 import { verifyToken } from "./lib/jwt";
 
 
-export function proxy(req){
+export function proxy(req) {
 
 
-const token =
-req.headers.get("authorization");
+  const authHeader = req.headers.get("authorization");
 
 
-if(!token){
+  if (!authHeader) {
 
-return NextResponse.json(
-{
-message:"Unauthorized"
-},
-{
-status:401
-}
-);
+    return NextResponse.json(
+      {
+        message: "Unauthorized - token missing"
+      },
+      {
+        status: 401
+      }
+    );
 
-}
-
-
-
-const jwt =
-token.split(" ")[1];
+  }
 
 
-try{
+  const token = authHeader.split(" ")[1];
 
 
-verifyToken(jwt);
+  if (!token) {
 
+    return NextResponse.json(
+      {
+        message:"Invalid authorization format"
+      },
+      {
+        status:401
+      }
+    );
 
-return NextResponse.next();
-
-
-}catch(error){
-
-
-return NextResponse.json(
-
-{
-message:"Invalid token"
-},
-
-{
-status:401
-}
-
-);
-
-
-}
-
-
-}
+  }
 
 
 
+  try {
 
-export const config={
 
-matcher:[
+    verifyToken(token);
 
-"/api/users/:path*",
 
-"/api/roles/:path*",
+    return NextResponse.next();
 
-"/api/tenants/:path*",
 
-"/api/branches/:path*",
 
-"/api/suppliers/:path*",
+  } catch(error){
 
-"/api/units/:path*",
 
-"/api/payment-methods/:path*",
+    return NextResponse.json(
+      {
+        message:"Invalid token"
+      },
+      {
+        status:401
+      }
+    );
 
-"/api/products/:path*",
 
-"/api/inventory/:path*",
-
-"/api/product-stock/:path*",
-
-"/api/inventory-transfers/:path*"
-
-]
+  }
 
 }
+
+
+
+export const config = {
+
+ matcher:[
+
+  "/api/users/:path*",
+  "/api/roles/:path*",
+  "/api/tenants/:path*",
+  "/api/branches/:path*",
+  "/api/suppliers/:path*",
+  "/api/units/:path*",
+  "/api/payment-methods/:path*",
+  "/api/products/:path*",
+  "/api/inventory/:path*",
+  "/api/product-stock/:path*",
+  "/api/inventory-transfers/:path*"
+
+ ]
+
+};

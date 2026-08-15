@@ -10,19 +10,39 @@ import { validate } from "../../../lib/validations/validate";
 // GET ALL PURCHASES
 // authenticated users
 
-export async function GET(req) {
+export async function GET(req){
 
-  try {
+    try{
 
-    verifyRequestToken(req);
+        const user = verifyRequestToken(req);
 
-    const result = await pool.query(
-`
+
+        requireRole(
+            user,
+            [
+                "admin",
+                "superAdmin",
+                "manager"
+            ]
+        );
+
+
+        let purchaseQuery = `
+
 SELECT
-    p.*,
-    s.name AS supplier_name,
-    b.name AS branch_name
+
+p.*,
+
+t.name AS tenant_name,
+
+s.name AS supplier_name,
+
+b.name AS branch_name
+
 FROM purchases p
+
+LEFT JOIN tenants t
+ON p.tenant_id = t.id
 
 LEFT JOIN suppliers s
 ON p.supplier_id = s.id
@@ -30,26 +50,69 @@ ON p.supplier_id = s.id
 LEFT JOIN branches b
 ON p.branch_id = b.id
 
+`;
+
+
+
+        const values = [];
+
+
+
+        if(!user.isSystemAdmin){
+
+            purchaseQuery += `
+
+WHERE p.tenant_id = $1
+
+`;
+
+            values.push(
+                user.tenantId
+            );
+
+        }
+
+
+
+        purchaseQuery += `
+
 ORDER BY p.id DESC
-`
-    );
 
-    return NextResponse.json(
-      result.rows
-    );
+`;
 
-  } catch (error) {
 
-    return NextResponse.json(
-      {
-        message: error.message
-      },
-      {
-        status: 500
-      }
-    );
 
-  }
+        const result =
+        await pool.query(
+            purchaseQuery,
+            values
+        );
+
+
+
+        return NextResponse.json(
+            result.rows
+        );
+
+
+
+    }catch(error){
+
+
+        return NextResponse.json(
+
+            {
+                message:error.message
+            },
+
+            {
+                status:500
+            }
+
+        );
+
+
+    }
 
 }
 
@@ -86,11 +149,43 @@ export async function POST(req) {
     }
 
     const {
-      supplier_id,
-      branch_id,
-      invoice_number,
-      items
-    } = data;
+  tenant_id,
+  supplier_id,
+  branch_id,
+  invoice_number,
+  items
+} = data;
+
+
+// ===============================
+// Determine tenant
+// ===============================
+
+let assignedTenant;
+
+if (user.isSystemAdmin) {
+
+  if (!tenant_id) {
+
+    return NextResponse.json(
+      {
+        message: "Tenant is required."
+      },
+      {
+        status: 400
+      }
+    );
+
+  }
+
+  assignedTenant = Number(tenant_id);
+
+}
+else {
+
+  assignedTenant = user.tenantId;
+
+}
 
     await client.query("BEGIN");
 
@@ -103,27 +198,72 @@ export async function POST(req) {
         Number(item.purchase_price);
 
     }
+const branchCheck =
+await client.query(
+`
+SELECT id
+FROM branches
+WHERE id=$1
+AND tenant_id=$2
+`,
+[
+branch_id,
+assignedTenant
+]
+);
 
+if(branchCheck.rows.length===0){
+
+throw new Error(
+"Selected branch does not belong to the selected tenant."
+);
+
+}
+
+const supplierCheck =
+await client.query(
+`
+SELECT id
+FROM suppliers
+WHERE id=$1
+AND tenant_id=$2
+`,
+[
+supplier_id,
+assignedTenant
+]
+);
+
+if(supplierCheck.rows.length===0){
+
+throw new Error(
+"Selected supplier does not belong to the selected tenant."
+);
+
+}
     const purchaseResult =
       await client.query(
 `
 INSERT INTO purchases
 (
+tenant_id,
 supplier_id,
 branch_id,
 invoice_number,
 total_amount,
 status
 )
-VALUES($1,$2,$3,$4,'COMPLETED')
+
+VALUES($1,$2,$3,$4,$5,'COMPLETED')
 RETURNING *
 `,
         [
-          supplier_id,
-          branch_id,
-          invoice_number,
-          total_amount
-        ]
+  assignedTenant,
+  supplier_id,
+  branch_id,
+  invoice_number,
+  total_amount
+]
       );
 
     const purchase =
@@ -134,20 +274,42 @@ RETURNING *
       const subtotal =
         item.quantity *
         item.purchase_price;
+const productCheck =
+await client.query(
+`
+SELECT 1
+FROM tenant_product
+WHERE tenant_id=$1
+AND product_id=$2
+`,
+[
+assignedTenant,
+item.product_id
+]
+);
 
+if(productCheck.rows.length===0){
+
+throw new Error(
+`Product ${item.product_id} does not belong to the selected tenant.`
+);
+
+}
       await client.query(
 `
 INSERT INTO purchase_items
 (
+tenant_id,
 purchase_id,
 product_id,
 quantity,
 purchase_price,
 subtotal
 )
-VALUES($1,$2,$3,$4,$5)
+VALUES($1,$2,$3,$4,$5,$6)
 `,
         [
+          assignedTenant,
           purchase.id,
           item.product_id,
           item.quantity,
@@ -160,13 +322,14 @@ VALUES($1,$2,$3,$4,$5)
 `
 INSERT INTO product_stock
 (
+tenant_id,
 product_id,
 branch_id,
 quantity
 )
-VALUES($1,$2,$3)
+VALUES($1,$2,$3,$4)
 
-ON CONFLICT(product_id,branch_id)
+ON CONFLICT(tenant_id,product_id,branch_id)
 
 DO UPDATE SET
 
@@ -174,7 +337,8 @@ quantity =
 product_stock.quantity +
 EXCLUDED.quantity
 `,
-        [
+        [ 
+          assignedTenant,
           item.product_id,
           branch_id,
           item.quantity
@@ -185,15 +349,18 @@ EXCLUDED.quantity
 `
 INSERT INTO inventory_transactions
 (
+tenant_id,
 product_id,
 branch_id,
 transaction_type,
 quantity,
 reference
 )
-VALUES($1,$2,'PURCHASE',$3,$4)
+VALUES($1,$2,$3,'PURCHASE',$4,$5)
+
 `,
-        [
+        [ 
+          assignedTenant,
           item.product_id,
           branch_id,
           item.quantity,

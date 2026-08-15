@@ -1,59 +1,71 @@
 import { NextResponse } from "next/server";
+
 import pool from "../../../../lib/db";
 
-import { verifyRequestToken, requireRole } from "@/lib/auth";
+import {
+  verifyRequestToken,
+  requireRole
+} from "@/lib/auth";
 
 
 
 
 // GET SINGLE SALE
-// authenticated users can view
+
+export async function GET(req, { params }) {
 
 
-export async function GET(
-    req,
-    { params }
-){
-
-    try{
+  try {
 
 
-        const user = verifyRequestToken(req);
+    const user = verifyRequestToken(req);
 
 
 
-        requireRole(
-
-            user,
-
-            [
-                "admin",
-                "superAdmin",
-                "manager",
-                "cashier"
-            ]
-
-        );
+    requireRole(
+      user,
+      [
+        "admin",
+        "superAdmin",
+        "manager",
+        "cashier"
+      ]
+    );
 
 
 
-        const { id } = await params;
+    const { id } = await params;
 
 
 
 
-        const sale = await pool.query(
 
-`
+    // ============================
+    // GET SALE HEADER
+    // ============================
+
+
+    let saleQuery = `
+
 SELECT
 
-s.*,
+    s.*,
 
-b.name AS branch_name,
+    t.name AS tenant_name,
 
-pm.name AS payment_method
+    b.name AS branch_name,
+
+    pm.name AS payment_method
+
 
 FROM sales s
+
+
+
+LEFT JOIN tenants t
+
+ON s.tenant_id = t.id
+
 
 
 LEFT JOIN branches b
@@ -61,66 +73,121 @@ LEFT JOIN branches b
 ON s.branch_id = b.id
 
 
+
 LEFT JOIN payment_methods pm
 
 ON s.payment_method_id = pm.id
 
 
-WHERE s.id=$1
 
-`,
+WHERE s.id = $1
 
-[id]
-
-);
+`;
 
 
 
+    const saleValues = [id];
 
 
-        if(sale.rows.length === 0){
+
+    if(!user.isSystemAdmin){
+
+  saleQuery += `
+AND s.tenant_id = $2
+`;
+
+  saleValues.push(user.tenantId);
+
+}
 
 
-            return NextResponse.json(
+    
 
-                {
-                    message:"Sale not found"
-                },
 
-                {
-                    status:404
-                }
 
-            );
 
+
+
+    const saleResult =
+    await pool.query(
+      saleQuery,
+      saleValues
+    );
+
+
+
+
+
+
+
+    if(
+      saleResult.rows.length === 0
+    ){
+
+
+      return NextResponse.json(
+
+        {
+          success:false,
+          message:"Sale not found"
+        },
+
+        {
+          status:404
         }
 
+      );
+
+
+    }
 
 
 
 
-        const items = await pool.query(
+
+
+
+    const sale =
+    saleResult.rows[0];
+
+
+
+
+
+
+
+
+    // ============================
+    // GET SALE ITEMS
+    // ============================
+const itemsResult =
+await pool.query(
 
 `
 SELECT
 
 si.*,
 
-p.name AS product_name
+p.name AS product_name,
 
+u.name AS unit_name,
+
+u.symbol AS unit_symbol
 
 FROM sale_items si
 
 
 LEFT JOIN products p
-
 ON si.product_id = p.id
+
+
+LEFT JOIN units u
+ON p.unit_id = u.id
 
 
 WHERE si.sale_id=$1
 
 `,
-
 [id]
 
 );
@@ -129,34 +196,48 @@ WHERE si.sale_id=$1
 
 
 
-        return NextResponse.json({
-
-            sale:sale.rows[0],
-
-            items:items.rows
-
-        });
 
 
 
+    return NextResponse.json({
 
-    }catch(error){
+      success:true,
 
+      sale,
 
-        return NextResponse.json(
+      items:
+      itemsResult.rows
 
-            {
-                message:error.message
-            },
-
-            {
-                status:500
-            }
-
-        );
+    });
 
 
-    }
+
+
+
+
+
+
+  }
+
+  catch(error){
+
+
+
+    return NextResponse.json(
+
+      {
+        success:false,
+        message:error.message
+      },
+
+      {
+        status:500
+      }
+
+    );
+
+
+  }
 
 
 }

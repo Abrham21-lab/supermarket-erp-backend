@@ -93,49 +93,62 @@ status:500
 
 
 
-// CREATE TRANSFER
-
-
 export async function POST(req){
-
 
 try{
 
+
 const user = verifyRequestToken(req);
 
+
 requireRole(
-  user,
-  [
-    "admin",
-    "superAdmin",
-    "manager"
-  ]
+user,
+[
+"admin",
+"superAdmin",
+"manager"
+]
 );
+
+
 
 const body = await req.json();
 
+
+
 const data = validate(
-  inventoryTransferSchema,
-  body
+
+inventoryTransferSchema,
+
+body
+
 );
 
-if (data instanceof Response) {
-  return data;
+
+
+if(data instanceof Response){
+
+return data;
+
 }
+
+
+
 
 const {
 
-  product_id,
+product_id,
 
-  from_branch_id,
+from_branch_id,
 
-  to_branch_id,
+to_branch_id,
 
-  quantity,
+quantity,
 
-  reference
+reference
 
-} = data;
+}=data;
+
 
 
 
@@ -145,8 +158,6 @@ await pool.query("BEGIN");
 
 
 
-
-// CHECK AVAILABLE STOCK
 
 
 const stock = await pool.query(
@@ -159,6 +170,8 @@ FROM product_stock
 WHERE product_id=$1
 
 AND branch_id=$2
+
+FOR UPDATE
 
 `,
 
@@ -174,10 +187,26 @@ from_branch_id
 
 
 
-if(
-stock.rows.length === 0 ||
-stock.rows[0].quantity < quantity
-){
+
+
+
+const available = stock.rows.length
+
+?
+
+Number(stock.rows[0].quantity)
+
+:
+
+0;
+
+
+
+
+
+
+
+if(available < quantity){
 
 
 await pool.query("ROLLBACK");
@@ -186,11 +215,17 @@ await pool.query("ROLLBACK");
 return NextResponse.json(
 
 {
-message:"Not enough stock in source branch"
+
+message:
+
+`Insufficient stock. Available quantity: ${available}`
+
 },
 
 {
+
 status:400
+
 }
 
 );
@@ -204,12 +239,11 @@ status:400
 
 
 
-// REMOVE FROM SOURCE BRANCH
-
 
 await pool.query(
 
 `
+
 UPDATE product_stock
 
 SET quantity = quantity - $1
@@ -238,18 +272,22 @@ from_branch_id
 
 
 
-// ADD TO DESTINATION BRANCH
 
 
 await pool.query(
 
 `
+
 INSERT INTO product_stock
 
 (
+
 product_id,
+
 branch_id,
+
 quantity
+
 )
 
 VALUES($1,$2,$3)
@@ -259,8 +297,10 @@ ON CONFLICT(product_id,branch_id)
 
 DO UPDATE SET
 
-quantity =
+quantity = 
+
 product_stock.quantity + EXCLUDED.quantity
+
 
 `,
 
@@ -282,23 +322,28 @@ quantity
 
 
 
-// SAVE TRANSFER HISTORY
-
-
 const result = await pool.query(
 
 `
+
 INSERT INTO inventory_transfers
 
 (
+
 product_id,
+
 from_branch_id,
+
 to_branch_id,
+
 quantity,
+
 reference
+
 )
 
 VALUES($1,$2,$3,$4,$5)
+
 
 RETURNING *
 
@@ -324,10 +369,7 @@ reference
 
 
 
-
 await pool.query("COMMIT");
-
-
 
 
 
@@ -336,7 +378,9 @@ return NextResponse.json(
 result.rows[0],
 
 {
+
 status:201
+
 }
 
 );
@@ -350,7 +394,6 @@ status:201
 await pool.query("ROLLBACK");
 
 
-
 return NextResponse.json(
 
 {
@@ -362,7 +405,6 @@ status:500
 }
 
 );
-
 
 
 }

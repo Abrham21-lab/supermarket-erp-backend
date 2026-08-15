@@ -28,26 +28,29 @@ SELECT
 
 ps.id,
 
+ps.product_id,
+
+ps.branch_id,
+
 p.name AS product,
 
 b.name AS branch,
 
-ps.quantity
+ps.quantity,
+
+ps.created_at,
+
+ps.updated_at
 
 FROM product_stock ps
 
-
 JOIN products p
-
-ON ps.product_id = p.id
-
+ON ps.product_id=p.id
 
 JOIN branches b
+ON ps.branch_id=b.id
 
-ON ps.branch_id = b.id
-
-
-ORDER BY ps.id ASC
+ORDER BY ps.id DESC
 
 `
 
@@ -206,7 +209,11 @@ result = await pool.query(
 `
 UPDATE product_stock
 
-SET quantity = quantity + $1
+SET
+
+quantity = quantity + $1,
+
+updated_at = CURRENT_TIMESTAMP
 
 WHERE product_id=$2
 

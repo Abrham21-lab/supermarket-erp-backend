@@ -1,124 +1,279 @@
 import { NextResponse } from "next/server";
+
 import pool from "@/lib/db";
 
-import { verifyRequestToken, requireRole } from "@/lib/auth";
+import {
+  verifyRequestToken,
+  requireRole
+} from "@/lib/auth";
 
-import { logger } from "../../../lib/logger";
+import {
+  logger
+} from "../../../lib/logger";
 
-import { productSchema } from "../../../lib/validations/ProductValidation";
+import {
+  productSchema
+} from "../../../lib/validations/ProductValidation";
 
-import { validate } from "../../../lib/validations/validate";
-
+import {
+  validate
+} from "../../../lib/validations/validate";
 
 
 
 
 // GET ALL PRODUCTS
-// authenticated users
+
+// ======================================
+// GET ALL PRODUCTS
+// ======================================
 
 export async function GET(req) {
 
-
   try {
 
+    const user = verifyRequestToken(req);
 
+    const isSystemAdmin =
+      user.is_system_admin === true ||
+      user.isSystemAdmin === true;
 
-    verifyRequestToken(req);
+    const tenantId =
+      user.tenantId ||
+      user.tenant_id;
 
+    const { searchParams } = new URL(req.url);
 
+    const selectedTenant =
+      searchParams.get("tenant_id");
 
+    let result;
 
-    const result = await pool.query(
+    // ======================================
+    // SYSTEM ADMIN
+    // ======================================
 
-`
-SELECT
+    if (isSystemAdmin) {
 
-p.id,
+      if (selectedTenant) {
 
-p.name,
+        result = await pool.query(
+          `
+          SELECT
 
-p.barcode,
+            p.id,
+            p.name,
+            p.barcode,
+            p.purchase_price,
+            p.selling_price,
+            p.status,
+            p.tax_id,
 
-p.purchase_price,
+            c.name AS category,
+            s.name AS supplier,
+            u.name AS unit,
+            t.name AS tax,
+            t.rate AS tax_rate,
 
-p.selling_price,
+            COALESCE(
+              JSON_AGG(ten.name)
+              FILTER (WHERE ten.id IS NOT NULL),
+              '[]'
+            ) AS tenants
 
+          FROM products p
 
-c.name AS category,
+          INNER JOIN tenant_product tp
+            ON p.id = tp.product_id
 
+          LEFT JOIN categories c
+            ON p.category_id = c.id
 
-s.name AS supplier,
+          LEFT JOIN suppliers s
+            ON p.supplier_id = s.id
 
+          LEFT JOIN units u
+            ON p.unit_id = u.id
 
-u.name AS unit
+          LEFT JOIN taxes t
+            ON p.tax_id = t.id
 
+          LEFT JOIN tenants ten
+            ON tp.tenant_id = ten.id
 
-FROM products p
+          WHERE tp.tenant_id = $1
 
+          GROUP BY
+            p.id,
+            c.name,
+            s.name,
+            u.name,
+            t.name,
+            t.rate
 
-LEFT JOIN categories c
+          ORDER BY p.id DESC
+          `,
+          [selectedTenant]
+        );
 
-ON p.category_id = c.id
+      } else {
 
+        result = await pool.query(
+          `
+          SELECT
 
+            p.id,
+            p.name,
+            p.barcode,
+            p.purchase_price,
+            p.selling_price,
+            p.status,
+            p.tax_id,
 
-LEFT JOIN suppliers s
+            c.name AS category,
+            s.name AS supplier,
+            u.name AS unit,
+            t.name AS tax,
+            t.rate AS tax_rate,
 
-ON p.supplier_id = s.id
+            COALESCE(
+              JSON_AGG(ten.name)
+              FILTER (WHERE ten.id IS NOT NULL),
+              '[]'
+            ) AS tenants
 
+          FROM products p
 
+          LEFT JOIN categories c
+            ON p.category_id = c.id
 
-LEFT JOIN units u
+          LEFT JOIN suppliers s
+            ON p.supplier_id = s.id
 
-ON p.unit_id = u.id
+          LEFT JOIN units u
+            ON p.unit_id = u.id
 
+          LEFT JOIN taxes t
+            ON p.tax_id = t.id
 
+          LEFT JOIN tenant_product tp
+            ON p.id = tp.product_id
 
-ORDER BY p.id DESC
+          LEFT JOIN tenants ten
+            ON tp.tenant_id = ten.id
 
-`
+          GROUP BY
+            p.id,
+            c.name,
+            s.name,
+            u.name,
+            t.name,
+            t.rate
 
-    );
+          ORDER BY p.id DESC
+          `
+        );
 
+      }
 
+    }
 
+    // ======================================
+    // TENANT USER
+    // ======================================
 
-    logger.info("Products retrieved");
+    else {
 
+      if (!tenantId) {
 
+        return NextResponse.json(
+          {
+            message: "Tenant not found in token"
+          },
+          {
+            status: 403
+          }
+        );
 
-    return NextResponse.json(
+      }
 
-      result.rows
+      result = await pool.query(
+        `
+        SELECT
 
-    );
+          p.id,
+          p.name,
+          p.barcode,
+          p.purchase_price,
+          p.selling_price,
+          p.status,
+          p.tax_id,
 
+          c.name AS category,
+          s.name AS supplier,
+          u.name AS unit,
+          t.name AS tax,
+          t.rate AS tax_rate,
 
+          COALESCE(
+            JSON_AGG(ten.name)
+            FILTER (WHERE ten.id IS NOT NULL),
+            '[]'
+          ) AS tenants
 
+        FROM products p
 
-  } catch(error) {
+        INNER JOIN tenant_product tp
+          ON p.id = tp.product_id
 
+        LEFT JOIN categories c
+          ON p.category_id = c.id
 
+        LEFT JOIN suppliers s
+          ON p.supplier_id = s.id
+
+        LEFT JOIN units u
+          ON p.unit_id = u.id
+
+        LEFT JOIN taxes t
+          ON p.tax_id = t.id
+
+        LEFT JOIN tenants ten
+          ON tp.tenant_id = ten.id
+
+        WHERE tp.tenant_id = $1
+
+        GROUP BY
+          p.id,
+          c.name,
+          s.name,
+          u.name,
+          t.name,
+          t.rate
+
+        ORDER BY p.id DESC
+        `,
+        [tenantId]
+      );
+
+    }
+
+    return NextResponse.json(result.rows);
+
+  } catch (error) {
 
     logger.error(error.message);
 
-
-
     return NextResponse.json(
-
       {
-        message:error.message
+        message: error.message
       },
-
       {
-        status:500
+        status: 500
       }
-
     );
 
-
   }
-
 
 }
 
@@ -126,103 +281,70 @@ ORDER BY p.id DESC
 
 
 
-
-
-
-
-
-
-
 // CREATE PRODUCT
-// admin + superAdmin only
+
+export async function POST(req){
 
 
-export async function POST(req) {
+try{
 
 
-  try {
-
-
-
-    const user = verifyRequestToken(req);
-
-
-
-    console.log("JWT USER:", user);
+const user =
+verifyRequestToken(req);
 
 
 
-    requireRole(
+const isSystemAdmin = user.isSystemAdmin;
+requireRole(
 
-      user,
+user,
 
-      [
-        "admin",
-        "superAdmin"
-      ]
+[
+"admin",
+"system_admin"
+]
 
-    );
-
-
-
-
-
-    const body = await req.json();
+);
 
 
 
-
-    const data = validate(
-
-      productSchema,
-
-      body
-
-    );
+const body =
+await req.json();
 
 
 
+const data =
+validate(
 
-    if(data instanceof Response){
+productSchema,
 
-      return data;
+body
 
-    }
-
-
-
-
+);
 
 
 
-    const {
+if(data instanceof Response){
+
+return data;
+
+}
+const client =
+await pool.connect();
 
 
-      name,
 
-      barcode,
-
-      category_id,
-
-      supplier_id,
-
-      unit_id,
-
-      purchase_price,
-
-      selling_price
+try{
 
 
-    } = data;
+await client.query("BEGIN");
 
 
 
 
 
-
-
-
-    const result = await pool.query(
+const productResult =
+await client.query(
 
 `
 
@@ -242,15 +364,17 @@ unit_id,
 
 purchase_price,
 
-selling_price
+selling_price,
+
+tax_id,
+
+status
 
 )
 
-
 VALUES
 
-($1,$2,$3,$4,$5,$6,$7)
-
+($1,$2,$3,$4,$5,$6,$7,$8,$9)
 
 RETURNING *
 
@@ -260,21 +384,23 @@ RETURNING *
 
 [
 
+data.name,
 
-name,
+data.barcode,
 
-barcode,
+data.category_id,
 
-category_id,
+data.supplier_id,
 
-supplier_id,
+data.unit_id,
 
-unit_id,
+data.purchase_price,
 
-purchase_price,
+data.selling_price,
 
-selling_price
+data.tax_id,
 
+data.status ?? true
 
 ]
 
@@ -282,45 +408,159 @@ selling_price
 
 
 
+const product =
+productResult.rows[0];
 
 
+let tenantIds = [];
 
-    return NextResponse.json(
+// System Admin selects tenants manually
+if (isSystemAdmin) {
 
-      result.rows[0],
+  tenantIds = body.tenant_ids || [];
 
-      {
-        status:201
-      }
+  if (tenantIds.length === 0) {
 
+    throw new Error(
+      "Please select at least one tenant."
     );
-
-
-
-
-
-  } catch(error) {
-
-
-
-    logger.error(error.message);
-
-
-
-    return NextResponse.json(
-
-      {
-        message:error.message
-      },
-
-      {
-        status:403
-      }
-
-    );
-
 
   }
 
+}
+// Tenant Admin automatically assigned to own tenant
+
+else{
+
+
+if(!user.tenantId){
+
+
+throw new Error(
+"Tenant not found in token"
+);
+
+
+}
+
+
+
+tenantIds = [
+
+user.tenantId
+
+];
+
+
+}
+
+
+
+
+
+
+
+for (const tenantId of tenantIds) {
+
+  const tenantExists =
+    await client.query(
+      `
+      SELECT id
+      FROM tenants
+      WHERE id = $1
+      `,
+      [tenantId]
+    );
+
+  if (tenantExists.rows.length === 0) {
+
+    throw new Error(
+      `Tenant ${tenantId} does not exist.`
+    );
+
+  }
+
+  await client.query(
+    `
+    INSERT INTO tenant_product
+    (
+      tenant_id,
+      product_id
+    )
+    VALUES
+    ($1,$2)
+    ON CONFLICT DO NOTHING
+    `,
+    [
+      tenantId,
+      product.id
+    ]
+  );
+
+}
+
+
+
+
+await client.query("COMMIT");
+
+
+
+
+return NextResponse.json(
+
+product,
+
+{
+status:201
+}
+
+);
+
+
+
+}
+catch(error){
+
+
+await client.query("ROLLBACK");
+
+
+throw error;
+
+
+}
+finally{
+
+
+client.release();
+
+
+}
+
+
+
+}
+catch(error){
+
+
+logger.error(error.message);
+
+
+
+return NextResponse.json(
+
+{
+message:error.message
+},
+
+{
+status:500
+}
+
+);
+
+
+}
 
 }

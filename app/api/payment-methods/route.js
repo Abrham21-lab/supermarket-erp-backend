@@ -2,64 +2,159 @@ import { NextResponse } from "next/server";
 import pool from "../../../lib/db";
 import { paymentSchema } from "../../../lib/validations/paymentMethodValidation";
 import { validate } from "../../../lib/validations/validate";
-import { verifyRequestToken, requireRole } from "@/lib/auth";
+import {
+  verifyRequestToken,
+  requireRole
+} from "@/lib/auth";
 
 
-
-
+// =========================================
 // GET ALL PAYMENT METHODS
-// authenticated users
+// =========================================
 
-export async function GET(req){
+// =========================================
+// GET ALL PAYMENT METHODS
+// =========================================
 
+export async function GET(req) {
 
-    try{
+  try {
 
+    const currentUser = verifyRequestToken(req);
 
-        verifyRequestToken(req);
+    const { searchParams } = new URL(req.url);
 
+    const selectedTenant = searchParams.get("tenant_id");
 
+    let result;
 
-        const result = await pool.query(
+    // =====================================
+    // SYSTEM ADMIN
+    // =====================================
 
-`
-SELECT *
+    if (currentUser.isSystemAdmin) {
 
-FROM payment_methods
+      // Filter by tenant (used by SalesForm)
+      if (selectedTenant) {
 
-ORDER BY id ASC
-
-`
-
+        result = await pool.query(
+          `
+          SELECT
+            pm.id,
+            pm.name,
+            pm.description,
+            pm.is_active,
+            pm.created_at
+          FROM payment_methods pm
+          INNER JOIN tenant_payment_methods tpm
+            ON pm.id = tpm.payment_method_id
+          WHERE tpm.tenant_id = $1
+          ORDER BY pm.id ASC
+          `,
+          [selectedTenant]
         );
 
+      }
 
+      // All payment methods
+      else {
 
-        return NextResponse.json(
+        result = await pool.query(
+          `
+          SELECT
 
-            result.rows
+            pm.id,
+            pm.name,
+            pm.description,
+            pm.is_active,
+            pm.created_at,
 
+            COALESCE(
+              STRING_AGG(
+                t.name,
+                ', '
+                ORDER BY t.name
+              ),
+              ''
+            ) AS tenants
+
+          FROM payment_methods pm
+
+          LEFT JOIN tenant_payment_methods tpm
+            ON tpm.payment_method_id = pm.id
+
+          LEFT JOIN tenants t
+            ON t.id = tpm.tenant_id
+
+          GROUP BY
+            pm.id,
+            pm.name,
+            pm.description,
+            pm.is_active,
+            pm.created_at
+
+          ORDER BY pm.id ASC
+          `
         );
 
-
-
-    }catch(error){
-
-
-        return NextResponse.json(
-
-            {
-                message:error.message
-            },
-
-            {
-                status:500
-            }
-
-        );
-
+      }
 
     }
+
+    // =====================================
+    // TENANT USER
+    // =====================================
+
+    else {
+
+      result = await pool.query(
+        `
+        SELECT
+
+          pm.id,
+          pm.name,
+          pm.description,
+          pm.is_active,
+          pm.created_at
+
+        FROM payment_methods pm
+
+        INNER JOIN tenant_payment_methods tpm
+          ON tpm.payment_method_id = pm.id
+
+        WHERE tpm.tenant_id = $1
+
+        ORDER BY pm.id ASC
+        `,
+        [
+          currentUser.tenantId ||
+          currentUser.tenant_id
+        ]
+      );
+
+    }
+
+    return NextResponse.json(result.rows);
+
+  }
+
+  catch (error) {
+
+    console.error(
+      "GET PAYMENT METHODS ERROR:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        message: error.message
+      },
+      {
+        status: 500
+      }
+    );
+
+  }
 
 }
 
@@ -68,143 +163,196 @@ ORDER BY id ASC
 
 
 
-
-
-
-
-
+// =========================================
 // CREATE PAYMENT METHOD
-// admin + superAdmin + manager
+// =========================================
 
 
 export async function POST(req){
 
 
-    try{
+try{
+
+
+const currentUser =
+verifyRequestToken(req);
 
 
 
-        const user = verifyRequestToken(req);
+if(!currentUser.isSystemAdmin){
+
+requireRole(
+currentUser,
+[
+"admin",
+"manager"
+]
+);
+
+}
 
 
 
-        requireRole(
-
-            user,
-
-            [
-                "admin",
-                "superAdmin",
-                "manager"
-            ]
-
-        );
+const body =
+await req.json();
 
 
+const data =
+validate(
+paymentSchema,
+body
+);
 
 
-        const body = await req.json();
+if(data instanceof Response){
 
+return data;
 
-
-
-        const data = validate(
-
-            paymentSchema,
-
-            body
-
-        );
+}
 
 
 
-        if(data instanceof Response){
-
-            return data;
-
-        }
-
-
-
-
-        const {
-
-            name,
-
-            is_active
-
-
-        } = data;
-
-
-
-
-
-        const result = await pool.query(
-
-`
-INSERT INTO payment_methods
-
-(
+const {
 
 name,
 
-is_active
+description,
 
+is_active,
+
+tenant_ids
+
+}=data;
+
+
+
+
+const paymentResult =
+await pool.query(`
+
+INSERT INTO payment_methods
+
+(
+name,
+description,
+is_active
 )
 
-VALUES($1,$2)
+VALUES($1,$2,$3)
 
 RETURNING *
 
 `,
-
 [
-
 name,
-
+description || "",
 is_active ?? true
-
 ]
-
 );
 
 
 
-
-
-        return NextResponse.json(
-
-            result.rows[0],
-
-            {
-                status:201
-            }
-
-        );
+const payment =
+paymentResult.rows[0];
 
 
 
 
 
-    }catch(error){
+// SYSTEM ADMIN ASSIGN TENANTS
+
+if(currentUser.isSystemAdmin){
+
+
+for(const tenantId of tenant_ids || []){
+
+
+await pool.query(`
+
+INSERT INTO tenant_payment_methods
+
+(
+tenant_id,
+payment_method_id
+)
+
+VALUES($1,$2)
+
+ON CONFLICT DO NOTHING
+
+`,
+[
+tenantId,
+payment.id
+]
+);
+
+
+}
 
 
 
-        return NextResponse.json(
-
-        {
-            message:error.message
-        },
-
-        {
-            status:500
-        }
-
-        );
+}
 
 
-    }
+// TENANT ADMIN
 
+else{
+
+
+await pool.query(`
+
+INSERT INTO tenant_payment_methods
+
+(
+tenant_id,
+payment_method_id
+)
+
+VALUES($1,$2)
+
+`,
+[
+currentUser.tenantId,
+payment.id
+]
+);
+
+
+}
+
+
+
+return NextResponse.json(
+{
+success:true,
+payment
+},
+{
+status:201
+}
+);
+
+
+
+}catch(error){
+
+console.error(
+"CREATE PAYMENT ERROR:",
+error
+);
+
+
+return NextResponse.json(
+{
+message:error.message
+},
+{
+status:500
+}
+);
+
+
+}
 
 }

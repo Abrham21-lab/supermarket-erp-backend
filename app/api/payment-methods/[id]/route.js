@@ -2,248 +2,221 @@ import { NextResponse } from "next/server";
 import pool from "../../../../lib/db";
 import { paymentSchema } from "../../../../lib/validations/paymentMethodValidation";
 import { validate } from "../../../../lib/validations/validate";
-import { verifyRequestToken, requireRole } from "@/lib/auth";
+import {
+  verifyRequestToken,
+  requireRole,
+} from "@/lib/auth";
 
-
-
-
-// GET SINGLE PAYMENT METHOD
-// authenticated users
-
-export async function GET(
-  req,
-  { params }
-) {
-
-
+// =========================================
+// GET PAYMENT METHOD BY ID
+// =========================================
+export async function GET(req, { params }) {
   try {
-
-
-    verifyRequestToken(req);
-
-
+    const currentUser = verifyRequestToken(req);
 
     const { id } = await params;
 
+    let result;
 
+    // =====================================
+    // SYSTEM ADMIN
+    // =====================================
 
-    const result = await pool.query(
+    if (currentUser.isSystemAdmin) {
+      result = await pool.query(
+        `
+        SELECT
+            p.id,
+            p.name,
+            p.is_active,
+            p.description,
 
-`
-SELECT *
+            COALESCE(
+                ARRAY_AGG(tp.tenant_id)
+                FILTER (WHERE tp.tenant_id IS NOT NULL),
+                '{}'
+            ) AS tenant_ids,
 
-FROM payment_methods
+            COALESCE(
+                ARRAY_AGG(t.name)
+                FILTER (WHERE t.name IS NOT NULL),
+                '{}'
+            ) AS tenant_names
 
-WHERE id=$1
+        FROM payment_methods p
 
-`,
+        LEFT JOIN tenant_payment_methods tp
+            ON tp.payment_method_id = p.id
 
-      [id]
+        LEFT JOIN tenants t
+            ON t.id = tp.tenant_id
 
-    );
+        WHERE p.id=$1
 
-
-
-    if(result.rows.length === 0){
-
-      return NextResponse.json(
-
-        {
-          message:"Payment method not found"
-        },
-
-        {
-          status:404
-        }
-
+        GROUP BY
+            p.id,
+            p.name,
+            p.is_active
+        `,
+        [id]
       );
-
     }
 
+    // =====================================
+    // TENANT USER
+    // =====================================
 
+    else {
+      result = await pool.query(
+        `
+        SELECT
+            p.id,
+            p.name,
+            p.is_active,
+            p.description,
 
+        FROM payment_methods p
+
+        INNER JOIN tenant_payment_methods tp
+            ON tp.payment_method_id=p.id
+
+        WHERE
+            p.id=$1
+        AND
+            tp.tenant_id=$2
+        `,
+        [id, currentUser.tenantId]
+      );
+    }
+
+    if (result.rows.length === 0) {
+      return NextResponse.json(
+        {
+          message: "Payment method not found",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    return NextResponse.json(result.rows[0]);
+  } catch (error) {
     return NextResponse.json(
-
-      result.rows[0]
-
-    );
-
-
-
-  } catch(error){
-
-
-    return NextResponse.json(
-
       {
-        message:error.message
+        message: error.message,
       },
-
       {
-        status:500
+        status: 500,
       }
-
     );
-
   }
-
 }
 
-
-
-
-
-
-
-
-
+// =========================================
 // UPDATE PAYMENT METHOD
-// admin + superAdmin + manager
-
-export async function PUT(
-  req,
-  { params }
-) {
-
-
+// =========================================
+export async function PUT(req, { params }) {
   try {
+    const currentUser = verifyRequestToken(req);
 
-
-    const user = verifyRequestToken(req);
-
-
-
-    requireRole(
-
-      user,
-
-      [
-        "admin",
-        "superAdmin",
-        "manager"
-      ]
-
-    );
-
-
-
+    if (!currentUser.isSystemAdmin) {
+      requireRole(currentUser, ["admin", "manager"]);
+    }
 
     const { id } = await params;
-
-
 
     const body = await req.json();
 
+    const data = validate(paymentSchema, body);
 
-
-
-    const data = validate(
-
-      paymentSchema,
-
-      body
-
-    );
-
-
-
-    if(data instanceof Response){
-
+    if (data instanceof Response) {
       return data;
-
     }
 
-
-
-
     const {
+  name,
+  description,
+  is_active,
+  tenant_ids,
+} = data;
 
-      name,
+    // =====================================
+    // TENANT ACCESS CHECK
+    // =====================================
 
-      is_active
+    if (!currentUser.isSystemAdmin) {
+      const access = await pool.query(
+        `
+        SELECT 1
 
-    } = data;
+        FROM tenant_payment_methods
 
+        WHERE
+            payment_method_id=$1
+        AND
+            tenant_id=$2
+        `,
+        [id, currentUser.tenantId]
+      );
 
+      if (access.rows.length === 0) {
+        return NextResponse.json(
+          {
+            message:
+              "Payment method not found or access denied",
+          },
+          {
+            status: 404,
+          }
+        );
+      }
+    }
 
+    // =====================================
+    // UPDATE PAYMENT METHOD
+    // =====================================
 
+   const result =
+await pool.query(`
 
-    const result = await pool.query(
-
-`
 UPDATE payment_methods
 
 SET
 
 name=$1,
 
-is_active=$2
+description=$2,
 
-WHERE id=$3
+is_active=$3
+
+
+WHERE id=$4
+
 
 RETURNING *
 
 `,
-
-      [
-
-        name,
-
-        is_active,
-
-        id
-
-      ]
-
-    );
+[
+name,
+description || "",
+is_active ?? true,
+id
+]
+);
 
 
 
+if(result.rows.length===0){
 
-    if(result.rows.length === 0){
-
-      return NextResponse.json(
-
-        {
-          message:"Payment method not found"
-        },
-
-        {
-          status:404
-        }
-
-      );
-
-    }
-
-
-
-
-
-    return NextResponse.json(
-
-      result.rows[0]
-
-    );
-
-
-
-  } catch(error){
-
-
-    return NextResponse.json(
-
-      {
-        message:error.message
-      },
-
-      {
-        status:500
-      }
-
-    );
-
-  }
+return NextResponse.json(
+{
+message:"Payment method not found"
+},
+{
+status:404
+}
+);
 
 }
 
@@ -251,110 +224,161 @@ RETURNING *
 
 
 
+// SYSTEM ADMIN UPDATE TENANTS
+
+if(currentUser.isSystemAdmin){
+
+
+await pool.query(`
+
+DELETE FROM tenant_payment_methods
+
+WHERE payment_method_id=$1
+
+`,
+[
+id
+]
+);
 
 
 
-
-// DELETE PAYMENT METHOD
-// admin + superAdmin + manager
-
-export async function DELETE(
-  req,
-  { params }
-) {
+for(const tenantId of tenant_ids || []){
 
 
-  try {
+await pool.query(`
+
+INSERT INTO tenant_payment_methods
+
+(
+tenant_id,
+payment_method_id
+)
+
+VALUES($1,$2)
+
+ON CONFLICT DO NOTHING
+
+`,
+[
+tenantId,
+id
+]
+);
 
 
+}
 
-    const user = verifyRequestToken(req);
+}
 
-
-
-    requireRole(
-
-      user,
-
-      [
-        "admin",
-        "superAdmin",
-        "manager"
-      ]
-
+    return NextResponse.json({
+      success: true,
+      payment_method: result.rows[0],
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        message: error.message,
+      },
+      {
+        status: 500,
+      }
     );
+  }
+}
 
+// =========================================
+// DELETE PAYMENT METHOD
+// =========================================
+export async function DELETE(req, { params }) {
+  try {
+    const currentUser = verifyRequestToken(req);
 
-
+    if (!currentUser.isSystemAdmin) {
+      requireRole(currentUser, ["admin"]);
+    }
 
     const { id } = await params;
 
+    // =====================================
+    // TENANT ACCESS CHECK
+    // =====================================
 
+    if (!currentUser.isSystemAdmin) {
+      const access = await pool.query(
+        `
+        SELECT 1
 
+        FROM tenant_payment_methods
 
-    const result = await pool.query(
-
-`
-DELETE FROM payment_methods
-
-WHERE id=$1
-
-RETURNING *
-
-`,
-
-      [id]
-
-    );
-
-
-
-
-    if(result.rows.length === 0){
-
-      return NextResponse.json(
-
-        {
-          message:"Payment method not found"
-        },
-
-        {
-          status:404
-        }
-
+        WHERE
+            payment_method_id=$1
+        AND
+            tenant_id=$2
+        `,
+        [id, currentUser.tenantId]
       );
 
+      if (access.rows.length === 0) {
+        return NextResponse.json(
+          {
+            message:
+              "Payment method not found or access denied",
+          },
+          {
+            status: 404,
+          }
+        );
+      }
     }
 
+    // Remove mappings
 
+    await pool.query(
+      `
+      DELETE FROM tenant_payment_methods
 
-
-
-    return NextResponse.json(
-
-      {
-        message:"Payment method deleted successfully"
-      }
-
+      WHERE payment_method_id=$1
+      `,
+      [id]
     );
 
+    // Delete payment method
 
+    const result = await pool.query(
+      `
+      DELETE FROM payment_methods
 
-  } catch(error){
+      WHERE id=$1
 
+      RETURNING *
+      `,
+      [id]
+    );
 
+    if (result.rows.length === 0) {
+      return NextResponse.json(
+        {
+          message: "Payment method not found",
+        },
+        {
+          status: 404,
+        }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "Payment method deleted successfully",
+    });
+  } catch (error) {
     return NextResponse.json(
-
       {
-        message:error.message
+        message: error.message,
       },
-
       {
-        status:500
+        status: 500,
       }
-
     );
-
   }
-
 }

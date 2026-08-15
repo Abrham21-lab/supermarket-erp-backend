@@ -20,17 +20,20 @@ export async function GET(req, { params }) {
     const result = await pool.query(
 `
 SELECT
-ps.id,
+
+ps.*,
+
 p.name AS product,
-b.name AS branch,
-ps.quantity
+
+b.name AS branch
+
 FROM product_stock ps
 
 JOIN products p
-ON ps.product_id = p.id
+ON ps.product_id=p.id
 
 JOIN branches b
-ON ps.branch_id = b.id
+ON ps.branch_id=b.id
 
 WHERE ps.id=$1
 `,
@@ -103,8 +106,15 @@ export async function PUT(req, { params }) {
     const result = await pool.query(
 `
 UPDATE product_stock
-SET quantity=$1
+
+SET
+
+quantity=$1,
+
+updated_at=CURRENT_TIMESTAMP
+
 WHERE id=$2
+
 RETURNING *
 `,
       [

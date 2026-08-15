@@ -15,7 +15,7 @@ export async function GET(req) {
       FROM product_stock ps
       JOIN products p
       ON ps.product_id = p.id
-      WHERE ps.quantity <= 10
+      WHERE ps.quantity <= 20
       ORDER BY ps.quantity ASC
       `
     );

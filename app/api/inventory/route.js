@@ -97,52 +97,169 @@ status:500
 // CREATE INVENTORY TRANSACTION
 
 
+
 export async function POST(req){
 
 
 try{
 
-const body = await req.json();
 
 const user = verifyRequestToken(req);
 
+
+
 requireRole(
-  user,
-  [
-    "admin",
-    "superAdmin",
-    "manager"
-  ]
+
+user,
+
+[
+"admin",
+"superAdmin",
+"manager"
+]
+
 );
+
+
+
+
+const body = await req.json();
+
+
 
 const data = validate(
-  inventorySchema,
-  body
+
+inventorySchema,
+
+body
+
 );
 
-if (data instanceof Response) {
-  return data;
+
+
+if(data instanceof Response){
+
+return data;
+
 }
+
+
+
 
 const {
 
-  product_id,
+product_id,
 
-  branch_id,
+branch_id,
 
-  transaction_type,
+transaction_type,
 
-  quantity,
+quantity,
 
-  reference
+reference
 
-} = data;
+}=data;
 
 
 
-// START TRANSACTION
+
 
 await pool.query("BEGIN");
+
+
+
+
+
+// CHECK CURRENT STOCK
+
+const stockResult = await pool.query(
+
+`
+SELECT quantity
+
+FROM product_stock
+
+WHERE product_id=$1
+
+AND branch_id=$2
+
+`,
+
+[
+
+product_id,
+
+branch_id
+
+]
+
+);
+
+
+
+
+
+const currentStock =
+
+stockResult.rows.length
+
+?
+
+Number(stockResult.rows[0].quantity)
+
+:
+
+0;
+
+
+
+
+
+
+
+// PREVENT NEGATIVE STOCK
+
+
+if(
+
+transaction_type==="STOCK_OUT"
+
+&&
+
+currentStock < quantity
+
+){
+
+
+await pool.query("ROLLBACK");
+
+
+
+return NextResponse.json(
+
+{
+
+message:
+
+`Insufficient stock. Available quantity: ${currentStock}`
+
+},
+
+{
+
+status:400
+
+}
+
+);
+
+
+}
+
+
+
+
+
 
 
 
@@ -153,17 +270,26 @@ await pool.query("BEGIN");
 const transaction = await pool.query(
 
 `
+
 INSERT INTO inventory_transactions
 
 (
+
 product_id,
+
 branch_id,
+
 transaction_type,
+
 quantity,
+
 reference
+
 )
 
+
 VALUES($1,$2,$3,$4,$5)
+
 
 RETURNING *
 
@@ -191,32 +317,50 @@ reference
 
 
 
-// UPDATE STOCK
 
 
-if(transaction_type === "STOCK_IN"){
+
+
+
+// STOCK IN
+
+if(transaction_type==="STOCK_IN"){
 
 
 
 await pool.query(
 
 `
+
 INSERT INTO product_stock
 
 (
+
 product_id,
+
 branch_id,
+
 quantity
+
 )
+
 
 VALUES($1,$2,$3)
 
 
+
 ON CONFLICT(product_id,branch_id)
+
+
 
 DO UPDATE SET
 
-quantity = product_stock.quantity + EXCLUDED.quantity
+quantity =
+
+product_stock.quantity +
+
+EXCLUDED.quantity
+
 
 `,
 
@@ -233,27 +377,38 @@ quantity
 );
 
 
-
 }
 
 
 
 
 
-if(transaction_type === "STOCK_OUT"){
+
+
+
+
+
+
+// STOCK OUT
+
+
+if(transaction_type==="STOCK_OUT"){
 
 
 
 await pool.query(
 
 `
+
 UPDATE product_stock
 
 SET quantity = quantity - $1
 
+
 WHERE product_id=$2
 
 AND branch_id=$3
+
 
 `,
 
@@ -270,27 +425,38 @@ branch_id
 );
 
 
-
 }
 
 
 
 
 
-if(transaction_type === "ADJUSTMENT"){
+
+
+
+
+
+
+// ADJUSTMENT
+
+
+if(transaction_type==="ADJUSTMENT"){
 
 
 
 await pool.query(
 
 `
+
 UPDATE product_stock
 
 SET quantity=$1
 
+
 WHERE product_id=$2
 
 AND branch_id=$3
+
 
 `,
 
@@ -309,6 +475,7 @@ branch_id
 
 
 }
+
 
 
 
@@ -326,10 +493,14 @@ return NextResponse.json(
 transaction.rows[0],
 
 {
+
 status:201
+
 }
 
 );
+
+
 
 
 
@@ -345,18 +516,21 @@ await pool.query("ROLLBACK");
 return NextResponse.json(
 
 {
+
 message:error.message
+
 },
 
 {
+
 status:500
+
 }
 
 );
 
 
 }
-
 
 
 }

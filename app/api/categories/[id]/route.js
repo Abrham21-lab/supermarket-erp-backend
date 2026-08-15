@@ -1,70 +1,234 @@
 import { NextResponse } from "next/server";
+
 import pool from "../../../../lib/db";
 
-import { categorySchema } from "../../../../lib/validations/categoryValidation";
-import { validate } from "../../../../lib/validations/validate";
+import {
+  verifyRequestToken,
+  requireRole,
+} from "@/lib/auth";
 
-import { verifyRequestToken, requireRole } from "@/lib/auth";
+import {
+  categorySchema,
+} from "../../../../lib/validations/categoryValidation";
 
+import {
+  validate,
+} from "../../../../lib/validations/validate";
 
-
+// =========================================
 // GET CATEGORY BY ID
-// Any authenticated user
+// =========================================
 
-export async function GET(req,{params}) {
+export async function GET(
+  req,
+  { params }
+) {
 
   try {
 
+    const currentUser =
+      verifyRequestToken(req);
 
-    verifyRequestToken(req);
+    const { id } =
+      await params;
 
+    let result;
 
-    const { id } = await params;
+    // =====================================
+    // SYSTEM ADMIN
+    // =====================================
 
+    if (currentUser.isSystemAdmin) {
 
-    const result = await pool.query(
+      result =
+        await pool.query(
 
-      `
-      SELECT *
-      FROM categories
-      WHERE id=$1
-      `,
+          `
+          SELECT
 
-      [id]
+            c.id,
 
-    );
+            c.name,
 
+            c.description,
 
-    if(result.rows.length === 0){
+            c.status,
+
+            c.created_at,
+
+            COALESCE(
+
+              ARRAY_AGG(tc.tenant_id)
+
+              FILTER
+
+              (
+
+                WHERE tc.tenant_id IS NOT NULL
+
+              ),
+
+              '{}'
+
+            ) AS tenant_ids,
+
+            COALESCE(
+
+              ARRAY_AGG(t.name)
+
+              FILTER
+
+              (
+
+                WHERE t.name IS NOT NULL
+
+              ),
+
+              '{}'
+
+            ) AS tenant_names
+
+          FROM categories c
+
+          LEFT JOIN tenant_categories tc
+
+          ON tc.category_id = c.id
+
+          LEFT JOIN tenants t
+
+          ON t.id = tc.tenant_id
+
+          WHERE c.id = $1
+
+          GROUP BY
+
+            c.id,
+
+            c.name,
+
+            c.description,
+
+            c.status,
+
+            c.created_at
+
+          `,
+
+          [
+            id
+          ]
+
+        );
+
+    }
+
+    // =====================================
+    // TENANT USER
+    // =====================================
+
+    else {
+
+      if (!currentUser.tenantId) {
+
+        throw new Error(
+          "Tenant not found in token"
+        );
+
+      }
+
+      result =
+        await pool.query(
+
+          `
+          SELECT
+
+            c.id,
+
+            c.name,
+
+            c.description,
+
+            c.status,
+
+            c.created_at
+
+          FROM categories c
+
+          INNER JOIN tenant_categories tc
+
+          ON tc.category_id = c.id
+
+          WHERE
+
+            c.id = $1
+
+          AND
+
+            tc.tenant_id = $2
+
+          `,
+
+          [
+
+            id,
+
+            currentUser.tenantId
+
+          ]
+
+        );
+
+    }
+
+    if (result.rows.length === 0) {
 
       return NextResponse.json(
+
         {
-          message:"Category not found"
+
+          message:
+            "Category not found"
+
         },
+
         {
+
           status:404
+
         }
+
       );
 
     }
 
-
     return NextResponse.json(
-      result.rows[0]
-    );
 
+      result.rows[0]
+
+    );
 
   } catch(error) {
 
+    console.error(
+
+      "GET CATEGORY ERROR:",
+
+      error
+
+    );
 
     return NextResponse.json(
 
       {
+
         message:error.message
+
       },
 
       {
+
         status:500
+
       }
 
     );
@@ -73,97 +237,164 @@ export async function GET(req,{params}) {
 
 }
 
-
-
-
-
-
-
-
+// =========================================
 // UPDATE CATEGORY
-// admin + superAdmin + manager
-
-export async function PUT(req,{params}) {
+// =========================================
+export async function PUT(
+  req,
+  { params }
+) {
 
   try {
 
+    const currentUser =
+      verifyRequestToken(req);
 
-    const user = verifyRequestToken(req);
+    if (!currentUser.isSystemAdmin) {
 
+      requireRole(
+        currentUser,
+        [
+          "admin",
+          "manager"
+        ]
+      );
 
-    requireRole(
-      user,
-      [
-        "admin",
-        "superAdmin",
-        "manager"
-      ]
-    );
+    }
 
+    const { id } =
+      await params;
 
+    const body =
+      await req.json();
 
-    const { id } = await params;
+    const data =
+      validate(
+        categorySchema,
+        body
+      );
 
-
-
-    const body = await req.json();
-
-
-
-    const data = validate(
-
-      categorySchema,
-
-      body
-
-    );
-
-
-
-    if(data instanceof Response){
+    if (data instanceof Response) {
 
       return data;
 
     }
 
-
-
     const {
 
-      name
+      name,
+
+      description,
+
+      status,
+
+      tenant_ids
 
     } = data;
 
+    // =====================================
+    // TENANT ADMIN
+    // Ensure category belongs to own tenant
+    // =====================================
 
+    if (!currentUser.isSystemAdmin) {
 
-    const result = await pool.query(
+      if (!currentUser.tenantId) {
 
-      `
-      UPDATE categories
+        throw new Error(
+          "Tenant not found in token"
+        );
 
-      SET name=$1
+      }
 
-      WHERE id=$2
+      const access =
+        await pool.query(
 
-      RETURNING *
+          `
+          SELECT 1
 
-      `,
+          FROM tenant_categories
 
-      [
-        name,
-        id
-      ]
+          WHERE
 
-    );
+            category_id=$1
 
+          AND
 
+            tenant_id=$2
+          `,
 
-    if(result.rows.length === 0){
+          [
+            id,
+            currentUser.tenantId
+          ]
+
+        );
+
+      if (access.rows.length === 0) {
+
+        return NextResponse.json(
+
+          {
+            message:
+              "Category not found or access denied"
+          },
+
+          {
+            status:404
+          }
+
+        );
+
+      }
+
+    }
+
+    // =====================================
+    // UPDATE CATEGORY
+    // =====================================
+
+    const result =
+      await pool.query(
+
+        `
+        UPDATE categories
+
+        SET
+
+          name=$1,
+
+          description=$2,
+
+          status=$3
+
+        WHERE id=$4
+
+        RETURNING *
+
+        `,
+
+        [
+
+          name,
+
+          description || "",
+
+          status ?? true,
+
+          id
+
+        ]
+
+      );
+
+    if (result.rows.length === 0) {
 
       return NextResponse.json(
 
         {
-          message:"Category not found"
+          message:
+            "Category not found"
         },
 
         {
@@ -174,95 +405,256 @@ export async function PUT(req,{params}) {
 
     }
 
+    // =====================================
+    // SUPER ADMIN
+    // Update tenant assignments
+    // =====================================
 
+    if (currentUser.isSystemAdmin) {
 
-    return NextResponse.json(
+      await pool.query(
 
-      result.rows[0]
+        `
+        DELETE FROM tenant_categories
 
-    );
+        WHERE category_id=$1
+        `,
 
+        [
+          id
+        ]
 
+      );
 
-  } catch(error){
+      if (
 
+        tenant_ids &&
+
+        tenant_ids.length > 0
+
+      ) {
+
+        for (const tenantId of tenant_ids) {
+
+          await pool.query(
+
+            `
+            INSERT INTO tenant_categories
+
+            (
+
+              tenant_id,
+
+              category_id
+
+            )
+
+            VALUES
+
+            (
+
+              $1,
+
+              $2
+
+            )
+
+            ON CONFLICT
+
+            DO NOTHING
+            `,
+
+            [
+
+              tenantId,
+
+              id
+
+            ]
+
+          );
+
+        }
+
+      }
+
+    }
 
     return NextResponse.json(
 
       {
-        message:error.message
-      },
 
-      {
-        status:500
+        success:true,
+
+        category:
+          result.rows[0]
+
       }
 
     );
 
+  } catch(error) {
+
+    console.error(
+
+      "UPDATE CATEGORY ERROR:",
+
+      error
+
+    );
+
+    return NextResponse.json(
+
+      {
+
+        message:error.message
+
+      },
+
+      {
+
+        status:500
+
+      }
+
+    );
 
   }
 
 }
 
-
-
-
-
-
-
-
+// =========================================
 // DELETE CATEGORY
-// admin + superAdmin only
+// =========================================
 
-export async function DELETE(req,{params}) {
-
+export async function DELETE(
+  req,
+  { params }
+) {
 
   try {
 
+    const currentUser =
+      verifyRequestToken(req);
 
-    const user = verifyRequestToken(req);
+    if (!currentUser.isSystemAdmin) {
 
+      requireRole(
+        currentUser,
+        [
+          "admin"
+        ]
+      );
 
-    requireRole(
+    }
 
-      user,
+    const { id } =
+      await params;
+
+    // =====================================
+    // TENANT ADMIN
+    // Verify ownership
+    // =====================================
+
+    if (!currentUser.isSystemAdmin) {
+
+      if (!currentUser.tenantId) {
+
+        throw new Error(
+          "Tenant not found in token"
+        );
+
+      }
+
+      const access =
+        await pool.query(
+
+          `
+          SELECT 1
+
+          FROM tenant_categories
+
+          WHERE
+
+            category_id=$1
+
+          AND
+
+            tenant_id=$2
+          `,
+
+          [
+            id,
+            currentUser.tenantId
+          ]
+
+        );
+
+      if (access.rows.length === 0) {
+
+        return NextResponse.json(
+
+          {
+            message:
+              "Category not found or access denied"
+          },
+
+          {
+            status:404
+          }
+
+        );
+
+      }
+
+    }
+
+    // =====================================
+    // DELETE TENANT MAPPINGS
+    // =====================================
+
+    await pool.query(
+
+      `
+      DELETE FROM tenant_categories
+
+      WHERE category_id=$1
+      `,
 
       [
-        "admin",
-        "superAdmin"
+        id
       ]
 
     );
 
+    // =====================================
+    // DELETE CATEGORY
+    // =====================================
 
+    const result =
+      await pool.query(
 
-    const { id } = await params;
+        `
+        DELETE FROM categories
 
+        WHERE id=$1
 
+        RETURNING *
+        `,
 
-    const result = await pool.query(
+        [
+          id
+        ]
 
-      `
-      DELETE FROM categories
+      );
 
-      WHERE id=$1
-
-      RETURNING *
-
-      `,
-
-      [id]
-
-    );
-
-
-
-    if(result.rows.length === 0){
+    if (result.rows.length === 0) {
 
       return NextResponse.json(
 
         {
-          message:"Category not found"
+          message:
+            "Category not found"
         },
 
         {
@@ -273,31 +665,47 @@ export async function DELETE(req,{params}) {
 
     }
 
-
-
-    return NextResponse.json({
-
-      message:"Category deleted successfully"
-
-    });
-
-
-
-  } catch(error){
-
-
     return NextResponse.json(
 
       {
-        message:error.message
-      },
 
-      {
-        status:500
+        success:true,
+
+        message:
+          "Category deleted successfully",
+
+        category:
+          result.rows[0]
+
       }
 
     );
 
+  } catch(error) {
+
+    console.error(
+
+      "DELETE CATEGORY ERROR:",
+
+      error
+
+    );
+
+    return NextResponse.json(
+
+      {
+
+        message:error.message
+
+      },
+
+      {
+
+        status:500
+
+      }
+
+    );
 
   }
 
